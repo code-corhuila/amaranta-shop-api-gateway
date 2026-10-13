@@ -1,16 +1,19 @@
 name: CI
 
-# Skeleton stage: this repository does not have its code yet. This workflow guards what does not
-# depend on the language - the minimum content of a code repository (norm 5.1) and the absence
-# of secrets. The pull request that brings the code replaces it with the build and test steps of
-# the language (Annex I).
+# Every pull request builds the gateway and runs every check it must pass on a clean machine.
+# "It works on my computer" is not evidence; a green check here is.
 
 on:
   pull_request:
     branches: [develop, qa, main]
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   base:
@@ -21,7 +24,7 @@ jobs:
 
       - name: The repository has its minimum content
         run: |
-          for file in README.md .github/CODEOWNERS .gitignore .env.example; do
+          for file in README.md .github/CODEOWNERS .gitignore .env.example deploy/Dockerfile deploy/compose.yml nginx/nginx.conf; do
             [ -f "$file" ] || { echo "missing $file"; exit 1; }
           done
 
@@ -31,3 +34,19 @@ jobs:
             echo "A real environment file or key is versioned"
             exit 1
           fi
+
+      - name: The gateway holds no business rule, no secret and no state (Annex F)
+        run: |
+          if grep -rniE 'jwt|secret|password|BEGIN (RSA|PUBLIC)' nginx/ ; then
+            echo "the gateway only checks that a credential exists: it never validates or stores one"
+            exit 1
+          fi
+
+  config-and-checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # scripts/test.sh builds the image, runs `nginx -t`, then tests/smoke.sh and tests/routing.sh against it.
+      - name: Every check the gateway must pass
+        run: bash scripts/test.sh
