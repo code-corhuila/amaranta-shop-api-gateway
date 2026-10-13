@@ -1,0 +1,33 @@
+name: CI
+
+# Skeleton stage: this repository does not have its code yet. This workflow guards what does not
+# depend on the language - the minimum content of a code repository (norm 5.1) and the absence
+# of secrets. The pull request that brings the code replaces it with the build and test steps of
+# the language (Annex I).
+
+on:
+  pull_request:
+    branches: [develop, qa, main]
+
+permissions:
+  contents: read
+
+jobs:
+  base:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The repository has its minimum content
+        run: |
+          for file in README.md .github/CODEOWNERS .gitignore .env.example; do
+            [ -f "$file" ] || { echo "missing $file"; exit 1; }
+          done
+
+      - name: No real environment file or key is versioned
+        run: |
+          if git ls-files | grep -E '(^|/)\.env$|\.pem$|(^|/)keys/'; then
+            echo "A real environment file or key is versioned"
+            exit 1
+          fi
