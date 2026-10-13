@@ -1,0 +1,17 @@
+# The gateway only. amaranta-shop-infra-postgres includes this file to compose the platform.
+# It is the ONLY service that publishes a port to the host: every other service is reachable through it, or not at all.
+name: amaranta-shop-api-gateway
+
+services:
+  api-gateway:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    ports: ["8000:8000"]
+    restart: unless-stopped
+    networks: [platform]
+
+networks:
+  platform:
+    name: platform
+    external: true
