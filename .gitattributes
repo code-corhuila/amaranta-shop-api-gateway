@@ -1,2 +1,6 @@
 # Shell scripts run inside Linux containers: never let Git convert them to CRLF.
 *.sh text eol=lf
+# Same for the nginx files and the stub template: a CRLF inside a conf file breaks the line that carries it in the container.
+*.conf text eol=lf
+*.template text eol=lf
+Dockerfile text eol=lf
