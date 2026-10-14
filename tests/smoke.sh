@@ -45,5 +45,23 @@ contains "CORS exposes X-Correlation-Id and Location"      'Access-Control-Expos
 contains "CORS allows Idempotency-Key"                     'Access-Control-Allow-Headers: .*Idempotency-Key' -H 'Origin: http://localhost:3000' "$BASE/health"
 absent   "an unknown origin gets no CORS grant"            'Access-Control-Allow-Origin: http' -H 'Origin: http://evil.example' "$BASE/health"
 absent   "the server does not say which nginx it is"       'nginx/' "$BASE/health"
+check    "a preflight from a known origin is 204"          204 -X OPTIONS -H 'Origin: http://localhost:3000' -H 'Access-Control-Request-Method: POST' "$BASE/api/v1/orders"
+contains "...and it allows Idempotency-Key"                'Access-Control-Allow-Headers: .*Idempotency-Key' -X OPTIONS -H 'Origin: http://localhost:3000' "$BASE/api/v1/orders"
+absent   "a preflight from an unknown origin gets no grant" 'Access-Control-Allow-Origin: http' -X OPTIONS -H 'Origin: http://evil.example' "$BASE/api/v1/orders"
+
+# Last on purpose: it empties this client's bucket. A fast loop must reach the limit; the rejection is the shared envelope.
+echo "rate limit (Annex F)"
+limited=""
+for _ in $(seq 1 200); do
+  response=$(curl -si "$BASE/nope")
+  case "$response" in "HTTP/1.1 429"*) limited="$response"; break ;; esac
+done
+if [ -z "$limited" ]; then echo "  FAIL  200 quick requests never reached the limit"; fail=1; else
+  echo "  ok    a fast loop reaches the limit (429)"
+  for want in '"error":"TOO_MANY_REQUESTS"' 'Retry-After: 1' 'X-Correlation-Id: ' 'Access-Control-Expose-Headers'; do
+    if echo "$limited" | grep -qi -- "$want"; then echo "  ok    the 429 carries $want"; else echo "  FAIL  the 429 lacks $want"; fail=1; fi
+  done
+fi
+check    "the health probe is never limited"               200 "$BASE/health"
 
 exit $fail
