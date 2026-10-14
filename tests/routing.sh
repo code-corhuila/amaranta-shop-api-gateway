@@ -18,10 +18,19 @@ docker restart "$GW_NAME" > /dev/null
 for _ in $(seq 1 30); do curl_in_network -c 'curl -sf http://gateway:8000/health > /dev/null' && break; sleep 1; done
 
 stub sales sales-api 8080
+stub catalog catalog-api 8082
 
-for _ in $(seq 1 30); do curl_in_network -c 'curl -sf http://sales-api:8080/ > /dev/null' && break; sleep 1; done
+for _ in $(seq 1 30); do curl_in_network -c 'curl -sf http://sales-api:8080/ > /dev/null && curl -sf http://catalog-api:8082/ > /dev/null' && break; sleep 1; done
 
-curl_in_network /tests/routing-checks.sh http://gateway:8000 up
+# One container per phase: each has its own rate-limit bucket. The failures go one service at a time, so the second
+# phase proves that a stopped service takes down only its own routes.
+check_phase() { curl_in_network /tests/routing-checks.sh http://gateway:8000 "$1"; }
+
+check_phase sales
+check_phase catalog
 
 docker stop -t 0 "stub-sales-$TEST_ID" > /dev/null
-curl_in_network /tests/routing-checks.sh http://gateway:8000 down
+check_phase sales-down
+
+docker stop -t 0 "stub-catalog-$TEST_ID" > /dev/null
+check_phase catalog-down
