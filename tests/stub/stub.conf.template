@@ -1,0 +1,20 @@
+# A service of mentira: it answers 200 with everything the gateway sent it, so a test can see what actually arrived.
+# nginx:alpine renders this template with the environment (STUB_NAME, STUB_PORT); the $variables below are nginx's own.
+server {
+    listen ${STUB_PORT};
+    default_type application/json;
+
+    # A service that answers with a rule of the business: the gateway must let it through untouched.
+    if ($request_uri ~ "force-422") {
+        return 422 '{"error":"BUSINESS_RULE","message":"from the service","traceId":"$http_x_correlation_id"}';
+    }
+
+    # A 404 that is the service's own (an order that does not exist) is not the gateway's "no such route".
+    if ($request_uri ~ "force-404") {
+        return 404 '{"error":"ORDER_NOT_FOUND","message":"from the service","traceId":"$http_x_correlation_id"}';
+    }
+
+    location / {
+        return 200 '{"service":"${STUB_NAME}","method":"$request_method","uri":"$request_uri","authorization":"$http_authorization","correlationId":"$http_x_correlation_id","idempotencyKey":"$http_idempotency_key"}';
+    }
+}
