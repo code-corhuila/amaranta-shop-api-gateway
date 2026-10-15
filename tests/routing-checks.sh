@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # The routing checks, run INSIDE the test network (by tests/routing.sh), against the gateway with a stub for each service.
-# Usage: sh tests/routing-checks.sh http://gateway:8000 sales|catalog|sales-down|catalog-down
+# Usage: sh tests/routing-checks.sh http://gateway:8000 sales|catalog|workflow|sales-down|catalog-down|workflow-down
 # Each phase runs in its own container, so each has its own rate-limit bucket: one phase must not use up another's.
 set -u
 BASE="${1:-http://gateway:8000}"
@@ -86,6 +86,22 @@ if [ "$PHASE" = "catalog" ]; then
   check    "not by walking out of the admin prefix"            404 -X POST -H "$BEARER" --path-as-is "$BASE/api/v1/admin/products/../../../internal/products/reserve-stock"
 fi
 
+if [ "$PHASE" = "workflow" ]; then
+  echo "sagas -> workflow (credential required: Annex E)"
+  check    "starting a saga needs a credential"                401 -X POST "$BASE/api/v1/sagas/place-order"
+  contains "...with the envelope"                              '"error":"UNAUTHORIZED"' -X POST "$BASE/api/v1/sagas/place-order"
+  contains "...and a credential reaches the workflow"          '"service":"workflow"' -X POST -H "$BEARER" "$BASE/api/v1/sagas/place-order"
+  contains "...with the credential untouched"                  '"authorization":"Bearer abc.def.ghi"' -X POST -H "$BEARER" "$BASE/api/v1/sagas/place-order"
+  contains "the Idempotency-Key reaches the workflow"          '"idempotencyKey":"saga-key-1"' -X POST -H "$BEARER" -H 'Idempotency-Key: saga-key-1' "$BASE/api/v1/sagas/place-order"
+  contains "the correlation id reaches the workflow"           '"correlationId":"route-3"' -X POST -H "$BEARER" -H 'X-Correlation-Id: route-3' "$BASE/api/v1/sagas/place-order"
+  check    "reading a saga needs a credential"                 401 "$BASE/api/v1/sagas/7f3a"
+  contains "...and with one the saga is read"                  '"uri":"/api/v1/sagas/7f3a"' -H "$BEARER" "$BASE/api/v1/sagas/7f3a"
+  check    "a saga of the workflow that is not found passes through" 404 -H "$BEARER" "$BASE/api/v1/sagas/force-404"
+  contains "...with the workflow's own body"                   '"error":"ORDER_NOT_FOUND"' -H "$BEARER" "$BASE/api/v1/sagas/force-404"
+  check    "the bare prefix is not routed"                     404 -H "$BEARER" "$BASE/api/v1/sagas"
+  check    "a path that only starts like sagas is not routed"  404 -H "$BEARER" "$BASE/api/v1/sagasx"
+fi
+
 # A failure stays inside its own route (Annex F): the gateway resolves each service on every request, so with one
 # service stopped only ITS routes answer 503 and every other route keeps working.
 if [ "$PHASE" = "sales-down" ]; then
@@ -97,6 +113,15 @@ if [ "$PHASE" = "sales-down" ]; then
   contains "...and the correlation id is returned"             'X-Correlation-Id: down-1' -X POST -H 'X-Correlation-Id: down-1' "$BASE/api/v1/orders"
   check    "the catalog still answers"                         200 "$BASE/api/v1/products"
   check    "the admin catalog still answers"                   200 -H "$BEARER" "$BASE/api/v1/admin/products"
+  check    "the workflow still answers"                        200 -H "$BEARER" "$BASE/api/v1/sagas/7f3a"
+  check    "the gateway itself stays healthy"                  200 "$BASE/health"
+fi
+
+if [ "$PHASE" = "workflow-down" ]; then
+  echo "the workflow is down too"
+  check    "its route answers 503"                             503 -X POST -H "$BEARER" "$BASE/api/v1/sagas/place-order"
+  contains "...with the envelope"                              '"error":"SERVICE_UNAVAILABLE"' -X POST -H "$BEARER" "$BASE/api/v1/sagas/place-order"
+  check    "a missing credential is still a 401, not a 503"    401 -X POST "$BASE/api/v1/sagas/place-order"
   check    "the gateway itself stays healthy"                  200 "$BASE/health"
 fi
 
