@@ -92,8 +92,8 @@ nginx/
 
 | Pillar | State |
 |---|---|
-| **Logs** | One JSON line per request on stdout: time, `correlationId`, method, path, status, upstream, duration. Never a body, never a token. |
-| **Traces** | `X-Correlation-Id` is reused (if it is a plain id) or created, sent to the service, returned to the client and used as `traceId`. It follows one request across services; there are no spans. |
+| **Logs** | One JSON line per request on stdout: time, `correlationId`, W3C `traceId`, gateway `spanId`, method, path, status, upstream and duration. Never a body or token. |
+| **Traces** | A valid W3C `traceparent` keeps its trace id. The gateway creates distinct response and upstream spans, forwards the upstream context and returns the response context. `X-Correlation-Id` remains for the existing error envelope and log search. |
 | **Metrics** | **Not yet.** The log lines can be counted, but nothing exposes counters to Prometheus. |
 
 ### Two things worth knowing
