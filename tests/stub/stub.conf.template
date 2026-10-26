@@ -15,6 +15,6 @@ server {
     }
 
     location / {
-        return 200 '{"service":"${STUB_NAME}","method":"$request_method","uri":"$request_uri","authorization":"$http_authorization","correlationId":"$http_x_correlation_id","idempotencyKey":"$http_idempotency_key"}';
+        return 200 '{"service":"${STUB_NAME}","method":"$request_method","uri":"$request_uri","authorization":"$http_authorization","correlationId":"$http_x_correlation_id","traceparent":"$http_traceparent","idempotencyKey":"$http_idempotency_key"}';
     }
 }

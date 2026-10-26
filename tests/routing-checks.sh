@@ -59,6 +59,7 @@ if [ "$PHASE" = "catalog" ]; then
   contains "one product needs no token either"                 '"uri":"/api/v1/products/7f3a"' "$BASE/api/v1/products/7f3a"
   contains "a token on a public route arrives untouched"       '"authorization":"Bearer abc.def.ghi"' -H "$BEARER" "$BASE/api/v1/products"
   contains "the correlation id reaches the service"            '"correlationId":"route-2"' -H 'X-Correlation-Id: route-2' "$BASE/api/v1/products"
+  contains "the trace id reaches the service"                  '"traceparent":"00-0123456789abcdef0123456789abcdef-[0-9a-f]\{16\}-01"' -H 'traceparent: 00-0123456789abcdef0123456789abcdef-0123456789abcdef-01' "$BASE/api/v1/products"
   check    "a 404 of the service passes through untouched"     404 "$BASE/api/v1/products/force-404"
   contains "...with the service's own body"                    '"error":"ORDER_NOT_FOUND"' "$BASE/api/v1/products/force-404"
   check    "a path that only starts like products is not routed" 404 "$BASE/api/v1/productsx"
