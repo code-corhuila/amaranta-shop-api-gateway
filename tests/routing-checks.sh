@@ -44,6 +44,8 @@ if [ "$PHASE" = "sales" ]; then
   contains "the Idempotency-Key reaches the service"           '"idempotencyKey":"key-1"' -X POST -H 'Idempotency-Key: key-1' "$BASE/api/v1/orders"
   contains "the correlation id reaches the service"            '"correlationId":"route-1"' -H 'X-Correlation-Id: route-1' -H "$BEARER" "$BASE/api/v1/orders"
   contains "a generated correlation id reaches it too"         '"correlationId":"[0-9a-f]\{32\}"' -H "$BEARER" "$BASE/api/v1/orders"
+  contains "the edge forwards its actual peer address"         '"forwardedFor":"[0-9a-f:.]\+"' -H "$BEARER" "$BASE/api/v1/orders"
+  absent   "a client cannot forge X-Forwarded-For"             '203.0.113.77' -H 'X-Forwarded-For: 203.0.113.77' -H "$BEARER" "$BASE/api/v1/orders"
   check    "a rule of the business passes through untouched"   422 -X POST -H "$BEARER" "$BASE/api/v1/orders/force-422/mark-paid"
   contains "...with the service's own body"                    '"error":"BUSINESS_RULE"' -X POST -H "$BEARER" "$BASE/api/v1/orders/force-422/mark-paid"
   check    "a 404 of the service passes through untouched"     404 -X POST -H "$BEARER" "$BASE/api/v1/orders/force-404/mark-paid"
