@@ -23,3 +23,24 @@ branch into another: `merge develop -> qa` and `merge qa -> main` do not exist i
 rule.
 
 Full policy: `00-governance/branching-policy.md` in `amaranta-shop-docs`.
+
+## Role in the system
+
+Single entry point of the system: routing, the credential filter, rate limits and CORS (norm 4.3). No client reaches a domain service without going through it.
+
+## Depends on
+
+`amaranta-shop-sales-api` and `amaranta-shop-catalog-api`, as the targets of `/api/v1/orders*` and `/api/v1/products*`. It holds no secret and has no database.
+
+## How to run
+
+Nothing to run yet. Once the routes land, the gateway starts from its own `Dockerfile` and is checked with `curl` against its health route and one route per domain.
+
+## Stack
+
+nginx, from the teacher's `api-gateway-nginx` template ([ADR-012](https://github.com/code-corhuila/amaranta-shop-docs/blob/main/05-architecture/decisions/records/ADR-012-stack-of-extracted-services.md)). One public exception: `POST /api/v1/orders` accepts a request without an `Authorization` header, so a visitor can buy without an account (spec `specs/checkout.md`, DP-1). Each service still validates its own tokens.
+
+## Status
+
+**Skeleton.** Only the base of a code repository is here (norm 5.1); nothing in it runs yet, and this README says so
+on purpose. Next pull request: `feat/gateway-routes`: the nginx configuration, one route file per domain.
