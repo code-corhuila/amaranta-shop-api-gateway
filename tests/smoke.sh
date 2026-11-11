@@ -34,6 +34,9 @@ echo "correlation (norm 5.3.9)"
 contains "a correlation id is generated"                   'X-Correlation-Id: [0-9a-f]\{32\}' "$BASE/health"
 contains "the client's correlation id is kept"             'X-Correlation-Id: smoke-1' -H 'X-Correlation-Id: smoke-1' "$BASE/health"
 contains "...and is the traceId of the envelope"           '"traceId":"smoke-2"' -H 'X-Correlation-Id: smoke-2' "$BASE/nope"
+contains "a W3C traceparent is generated"                  'traceparent: 00-[0-9a-f]\{32\}-[0-9a-f]\{16\}-01' "$BASE/health"
+contains "a valid trace id is preserved"                   'traceparent: 00-0123456789abcdef0123456789abcdef-[0-9a-f]\{16\}-01' -H 'traceparent: 00-0123456789abcdef0123456789abcdef-0123456789abcdef-01' "$BASE/health"
+absent   "an invalid traceparent is not echoed"            'not-a-trace' -H 'traceparent: not-a-trace' "$BASE/health"
 absent   "an id with forbidden characters is not echoed"   'smoke<script>' -H 'X-Correlation-Id: smoke<script>' "$BASE/health"
 absent   "an absurdly long id is not echoed"               "$(printf 'x%.0s' $(seq 1 200))" -H "X-Correlation-Id: $(printf 'x%.0s' $(seq 1 200))" "$BASE/health"
 
@@ -41,9 +44,27 @@ echo "headers and CORS (Annex F)"
 contains "responses are not sniffed"                       'X-Content-Type-Options: nosniff' "$BASE/health"
 contains "responses cannot be framed"                      'X-Frame-Options: DENY' "$BASE/health"
 contains "a known origin gets its CORS grant"              'Access-Control-Allow-Origin: http://localhost:3000' -H 'Origin: http://localhost:3000' "$BASE/health"
-contains "CORS exposes X-Correlation-Id and Location"      'Access-Control-Expose-Headers: X-Correlation-Id, Location' -H 'Origin: http://localhost:3000' "$BASE/health"
-contains "CORS allows Idempotency-Key"                     'Access-Control-Allow-Headers: .*Idempotency-Key' -H 'Origin: http://localhost:3000' "$BASE/health"
+contains "CORS exposes traceparent"                         'Access-Control-Expose-Headers: .*traceparent' -H 'Origin: http://localhost:3000' "$BASE/health"
+contains "CORS allows traceparent"                          'Access-Control-Allow-Headers: .*traceparent' -H 'Origin: http://localhost:3000' "$BASE/health"
 absent   "an unknown origin gets no CORS grant"            'Access-Control-Allow-Origin: http' -H 'Origin: http://evil.example' "$BASE/health"
 absent   "the server does not say which nginx it is"       'nginx/' "$BASE/health"
+check    "a preflight from a known origin is 204"          204 -X OPTIONS -H 'Origin: http://localhost:3000' -H 'Access-Control-Request-Method: POST' "$BASE/api/v1/orders"
+contains "...and it allows Idempotency-Key"                'Access-Control-Allow-Headers: .*Idempotency-Key' -X OPTIONS -H 'Origin: http://localhost:3000' "$BASE/api/v1/orders"
+absent   "a preflight from an unknown origin gets no grant" 'Access-Control-Allow-Origin: http' -X OPTIONS -H 'Origin: http://evil.example' "$BASE/api/v1/orders"
+
+# Last on purpose: it empties this client's bucket. A fast loop must reach the limit; the rejection is the shared envelope.
+echo "rate limit (Annex F)"
+limited=""
+for _ in $(seq 1 200); do
+  response=$(curl -si "$BASE/nope")
+  case "$response" in "HTTP/1.1 429"*) limited="$response"; break ;; esac
+done
+if [ -z "$limited" ]; then echo "  FAIL  200 quick requests never reached the limit"; fail=1; else
+  echo "  ok    a fast loop reaches the limit (429)"
+  for want in '"error":"TOO_MANY_REQUESTS"' 'Retry-After: 1' 'X-Correlation-Id: ' 'Access-Control-Expose-Headers'; do
+    if echo "$limited" | grep -qi -- "$want"; then echo "  ok    the 429 carries $want"; else echo "  FAIL  the 429 lacks $want"; fail=1; fi
+  done
+fi
+check    "the health probe is never limited"               200 "$BASE/health"
 
 exit $fail
