@@ -1,6 +1,6 @@
 #!/usr/bin/env sh
 # The routing checks, run INSIDE the test network (by tests/routing.sh), against the gateway with a stub for each service.
-# Usage: sh tests/routing-checks.sh http://gateway:8000 sales|catalog|workflow|sales-down|catalog-down|workflow-down
+# Usage: sh tests/routing-checks.sh http://gateway:8000 sales|catalog|workflow|identity|sales-down|catalog-down|workflow-down|identity-down
 # Each phase runs in its own container, so each has its own rate-limit bucket: one phase must not use up another's.
 set -u
 BASE="${1:-http://gateway:8000}"
@@ -105,6 +105,28 @@ if [ "$PHASE" = "workflow" ]; then
   check    "a path that only starts like sagas is not routed"  404 -H "$BEARER" "$BASE/api/v1/sagasx"
 fi
 
+if [ "$PHASE" = "identity" ]; then
+  echo "sign in and create an account -> identity (public)"
+  contains "signing in needs no credential and reaches identity"   '"service":"identity"' -X POST "$BASE/api/v1/auth/login"
+  contains "...mapped to the path the service serves"              '"uri":"/auth/login"' -X POST "$BASE/api/v1/auth/login"
+  contains "creating an account needs no credential either"        '"uri":"/auth/register"' -X POST "$BASE/api/v1/auth/register"
+  contains "a token that is sent arrives untouched"                '"authorization":"Bearer abc.def.ghi"' -X POST -H "$BEARER" "$BASE/api/v1/auth/login"
+  contains "the correlation id reaches identity"                   '"correlationId":"route-4"' -X POST -H 'X-Correlation-Id: route-4' "$BASE/api/v1/auth/login"
+  contains "the browser may read the answer (CORS)"                'Access-Control-Allow-Origin: http://localhost:3000' -X POST -H "$ORIGIN" "$BASE/api/v1/auth/login"
+  check    "a preflight needs no credential"                       204 -X OPTIONS -H "$ORIGIN" -H 'Access-Control-Request-Method: POST' "$BASE/api/v1/auth/login"
+  check    "only POST is routed: a GET is not"                     404 "$BASE/api/v1/auth/login"
+  check    "...and neither is it for creating an account"          404 "$BASE/api/v1/auth/register"
+  check    "walk-in registration is not published"                 404 -X POST -H "$BEARER" "$BASE/api/v1/auth/register-walk-in"
+  check    "the list of staff is not published"                    404 -H "$BEARER" "$BASE/api/v1/auth/staff"
+  check    "the search of customers is not published"              404 -H "$BEARER" "$BASE/api/v1/auth/customers"
+  check    "the monolith's own path is not published"              404 -X POST "$BASE/auth/login"
+  check    "a path that only starts like login is not routed"      404 -X POST "$BASE/api/v1/auth/loginx"
+  echo "guessing passwords is limited harder than the rest"
+  n=0; last=0
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do last=$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/auth/login"); [ "$last" = "429" ] && n=$((n+1)); done
+  if [ "$n" -ge 1 ]; then echo "  ok    a burst of 12 more attempts is cut with a 429 ($n of them)"; else echo "  FAIL  no attempt was limited"; fail=1; fi
+fi
+
 # A failure stays inside its own route (Annex F): the gateway resolves each service on every request, so with one
 # service stopped only ITS routes answer 503 and every other route keeps working.
 if [ "$PHASE" = "sales-down" ]; then
@@ -135,6 +157,13 @@ if [ "$PHASE" = "catalog-down" ]; then
   check    "the admin catalog answers 503"                     503 -H "$BEARER" "$BASE/api/v1/admin/products"
   check    "a missing credential is still a 401, not a 503"    401 "$BASE/api/v1/admin/products"
   check    "the gateway itself stays healthy"                  200 "$BASE/health"
+fi
+
+if [ "$PHASE" = "identity-down" ]; then
+  echo "identity is down too"
+  check    "signing in answers 503"                              503 -X POST "$BASE/api/v1/auth/login"
+  contains "...with the envelope"                                '"error":"SERVICE_UNAVAILABLE"' -X POST "$BASE/api/v1/auth/login"
+  check    "the gateway itself stays healthy"                    200 "$BASE/health"
 fi
 
 exit $fail
