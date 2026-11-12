@@ -114,6 +114,9 @@ if [ "$PHASE" = "identity" ]; then
   contains "the correlation id reaches identity"                   '"correlationId":"route-4"' -X POST -H 'X-Correlation-Id: route-4' "$BASE/api/v1/auth/login"
   contains "the browser may read the answer (CORS)"                'Access-Control-Allow-Origin: http://localhost:3000' -X POST -H "$ORIGIN" "$BASE/api/v1/auth/login"
   check    "a preflight needs no credential"                       204 -X OPTIONS -H "$ORIGIN" -H 'Access-Control-Request-Method: POST' "$BASE/api/v1/auth/login"
+  absent   "the service's own CORS origin is not passed on"         'the-service-own-origin' -X POST -H "$ORIGIN" "$BASE/api/v1/auth/login"
+  one=$(curl -s -i --max-time 15 -X POST -H "$ORIGIN" "$BASE/api/v1/auth/login" | grep -ci '^access-control-allow-origin:')
+  if [ "$one" = "1" ]; then echo "  ok    ...so the browser sees exactly one Access-Control-Allow-Origin"; else echo "  FAIL  the browser would see $one Access-Control-Allow-Origin headers"; fail=1; fi
   check    "only POST is routed: a GET is not"                     404 "$BASE/api/v1/auth/login"
   check    "...and neither is it for creating an account"          404 "$BASE/api/v1/auth/register"
   check    "walk-in registration is not published"                 404 -X POST -H "$BEARER" "$BASE/api/v1/auth/register-walk-in"
