@@ -1,7 +1,15 @@
 # A service of mentira: it answers 200 with everything the gateway sent it, so a test can see what actually arrived.
 # nginx:alpine renders this template with the environment (STUB_NAME, STUB_PORT); the $variables below are nginx's own.
+# The monolith that answers as identity sets its own CORS header (for its own web). The gateway owns that policy, so the stub
+# does the same on /auth/... to prove the gateway does not let it through next to its own.
+map $request_uri $stub_cors {
+    default       "";
+    "~^/auth/"    "http://the-service-own-origin.invalid";
+}
+
 server {
     listen ${STUB_PORT};
+    add_header Access-Control-Allow-Origin $stub_cors always;
     default_type application/json;
 
     # A service that answers with a rule of the business: the gateway must let it through untouched.
