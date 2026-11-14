@@ -1,0 +1,172 @@
+#!/usr/bin/env sh
+# The routing checks, run INSIDE the test network (by tests/routing.sh), against the gateway with a stub for each service.
+# Usage: sh tests/routing-checks.sh http://gateway:8000 sales|catalog|workflow|identity|sales-down|catalog-down|workflow-down|identity-down
+# Each phase runs in its own container, so each has its own rate-limit bucket: one phase must not use up another's.
+set -u
+BASE="${1:-http://gateway:8000}"
+PHASE="${2:-sales}"
+ORIGIN='Origin: http://localhost:3000'
+BEARER='Authorization: Bearer abc.def.ghi'
+fail=0
+
+check() {  # description, expected status, curl arguments...
+  desc="$1"; want="$2"; shift 2
+  got=$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' "$@")
+  if [ "$got" = "$want" ]; then echo "  ok    $desc ($got)"; else echo "  FAIL  $desc: want $want, got $got"; fail=1; fi
+}
+
+contains() {  # description, expected text, curl arguments...
+  desc="$1"; want="$2"; shift 2
+  if curl -s -i --max-time 15 "$@" | grep -qi -- "$want"; then echo "  ok    $desc"; else echo "  FAIL  $desc: missing $want"; fail=1; fi
+}
+
+absent() {  # description, forbidden text, curl arguments...
+  desc="$1"; bad="$2"; shift 2
+  if curl -s -i --max-time 15 "$@" | grep -qi -- "$bad"; then echo "  FAIL  $desc: found $bad"; fail=1; else echo "  ok    $desc"; fi
+}
+
+if [ "$PHASE" = "sales" ]; then
+  echo "orders -> sales-api"
+  contains "a visitor with no token can place an order"        '"service":"sales"' -X POST "$BASE/api/v1/orders"
+  check    "listing my orders needs a credential"              401 "$BASE/api/v1/orders"
+  contains "...and answers with the envelope"                  '"error":"UNAUTHORIZED"' "$BASE/api/v1/orders"
+  contains "...with a traceId"                                 '"traceId":"' "$BASE/api/v1/orders"
+  contains "...and says how to authenticate"                   'WWW-Authenticate: Bearer' "$BASE/api/v1/orders"
+  contains "...and the browser may read it (CORS)"             'Access-Control-Allow-Origin: http://localhost:3000' -H "$ORIGIN" "$BASE/api/v1/orders"
+  contains "a listing with a credential reaches the service"   '"service":"sales"' -H "$BEARER" "$BASE/api/v1/orders"
+  contains "the credential arrives untouched"                  '"authorization":"Bearer abc.def.ghi"' -H "$BEARER" "$BASE/api/v1/orders"
+  contains "a broken token is the service's to refuse"         '"service":"sales"' -X POST -H 'Authorization: Bearer not-a-token' "$BASE/api/v1/orders"
+  check    "an in-store order needs a credential"              401 -X POST "$BASE/api/v1/orders/in-store"
+  contains "...and reaches the service with one"               '"uri":"/api/v1/orders/in-store"' -X POST -H "$BEARER" "$BASE/api/v1/orders/in-store"
+  check    "marking an order paid needs a credential"          401 -X POST "$BASE/api/v1/orders/7f3a/mark-paid"
+  contains "...and reaches the service with one"               '"uri":"/api/v1/orders/7f3a/mark-paid"' -X POST -H "$BEARER" "$BASE/api/v1/orders/7f3a/mark-paid"
+  contains "the query string is kept"                          '"uri":"/api/v1/orders?page=2&limit=5"' -H "$BEARER" "$BASE/api/v1/orders?page=2&limit=5"
+  contains "the Idempotency-Key reaches the service"           '"idempotencyKey":"key-1"' -X POST -H 'Idempotency-Key: key-1' "$BASE/api/v1/orders"
+  contains "the correlation id reaches the service"            '"correlationId":"route-1"' -H 'X-Correlation-Id: route-1' -H "$BEARER" "$BASE/api/v1/orders"
+  contains "a generated correlation id reaches it too"         '"correlationId":"[0-9a-f]\{32\}"' -H "$BEARER" "$BASE/api/v1/orders"
+  contains "the edge forwards its actual peer address"         '"forwardedFor":"[0-9a-f:.]\+"' -H "$BEARER" "$BASE/api/v1/orders"
+  absent   "a client cannot forge X-Forwarded-For"             '203.0.113.77' -H 'X-Forwarded-For: 203.0.113.77' -H "$BEARER" "$BASE/api/v1/orders"
+  check    "a rule of the business passes through untouched"   422 -X POST -H "$BEARER" "$BASE/api/v1/orders/force-422/mark-paid"
+  contains "...with the service's own body"                    '"error":"BUSINESS_RULE"' -X POST -H "$BEARER" "$BASE/api/v1/orders/force-422/mark-paid"
+  check    "a 404 of the service passes through untouched"     404 -X POST -H "$BEARER" "$BASE/api/v1/orders/force-404/mark-paid"
+  contains "...with the service's own body, not the gateway's" '"error":"ORDER_NOT_FOUND"' -X POST -H "$BEARER" "$BASE/api/v1/orders/force-404/mark-paid"
+  check    "a preflight needs no credential"                 204 -X OPTIONS -H "$ORIGIN" -H 'Access-Control-Request-Method: POST' -H 'Access-Control-Request-Headers: idempotency-key' "$BASE/api/v1/orders"
+  check    "a path that only starts like orders is not routed" 404 -H "$BEARER" "$BASE/api/v1/orders-archive"
+fi
+
+if [ "$PHASE" = "catalog" ]; then
+  echo "products -> catalog-api (public)"
+  contains "the catalog needs no token"                        '"service":"catalog"' "$BASE/api/v1/products"
+  contains "the query string is kept"                          '"uri":"/api/v1/products?page=2&limit=5"' "$BASE/api/v1/products?page=2&limit=5"
+  contains "one product needs no token either"                 '"uri":"/api/v1/products/7f3a"' "$BASE/api/v1/products/7f3a"
+  contains "a token on a public route arrives untouched"       '"authorization":"Bearer abc.def.ghi"' -H "$BEARER" "$BASE/api/v1/products"
+  contains "the correlation id reaches the service"            '"correlationId":"route-2"' -H 'X-Correlation-Id: route-2' "$BASE/api/v1/products"
+  contains "the trace id reaches the service"                  '"traceparent":"00-0123456789abcdef0123456789abcdef-[0-9a-f]\{16\}-01"' -H 'traceparent: 00-0123456789abcdef0123456789abcdef-0123456789abcdef-01' "$BASE/api/v1/products"
+  check    "a 404 of the service passes through untouched"     404 "$BASE/api/v1/products/force-404"
+  contains "...with the service's own body"                    '"error":"ORDER_NOT_FOUND"' "$BASE/api/v1/products/force-404"
+  check    "a path that only starts like products is not routed" 404 "$BASE/api/v1/productsx"
+
+  echo "admin products -> catalog-api (credential required)"
+  check    "listing admin products needs a credential"         401 "$BASE/api/v1/admin/products"
+  contains "...with the envelope"                              '"error":"UNAUTHORIZED"' "$BASE/api/v1/admin/products"
+  contains "...and a credential reaches the service"           '"uri":"/api/v1/admin/products"' -H "$BEARER" "$BASE/api/v1/admin/products"
+  check    "creating a product needs a credential"             401 -X POST "$BASE/api/v1/admin/products"
+  check    "editing a product needs a credential"              401 -X PATCH "$BASE/api/v1/admin/products/7f3a"
+  check    "setting a stock needs a credential"                401 -X PATCH "$BASE/api/v1/admin/products/7f3a/stock"
+  check    "activating a product needs a credential"           401 -X POST "$BASE/api/v1/admin/products/7f3a/activate"
+  check    "deleting a product needs a credential"             401 -X DELETE "$BASE/api/v1/admin/products/7f3a"
+  contains "...and with one the delete reaches the service"    '"method":"DELETE"' -X DELETE -H "$BEARER" "$BASE/api/v1/admin/products/7f3a"
+  check    "a path that only starts like admin products is not routed" 404 -H "$BEARER" "$BASE/api/v1/admin/productsx"
+  check    "the bare admin prefix is not routed"               404 -H "$BEARER" "$BASE/api/v1/admin"
+
+  echo "the internal routes of catalog-api are never reachable (Annex F)"
+  check    "reserve-stock is not routed"                       404 -X POST -H "$BEARER" "$BASE/internal/products/reserve-stock"
+  check    "release-stock is not routed"                       404 -X POST -H "$BEARER" "$BASE/internal/products/release-stock"
+  check    "not under the public prefix"                       404 -X POST -H "$BEARER" "$BASE/api/v1/internal/products/reserve-stock"
+  check    "not by walking out of a public path"               404 -X POST -H "$BEARER" --path-as-is "$BASE/api/v1/products/../../../internal/products/reserve-stock"
+  check    "not by encoding the walk"                          404 -X POST -H "$BEARER" --path-as-is "$BASE/api/v1/products/%2e%2e/%2e%2e/%2e%2e/internal/products/reserve-stock"
+  check    "not by encoding the slash"                         404 -X POST -H "$BEARER" --path-as-is "$BASE/api/v1/products/..%2f..%2f..%2finternal/products/reserve-stock"
+  check    "not by walking out of the admin prefix"            404 -X POST -H "$BEARER" --path-as-is "$BASE/api/v1/admin/products/../../../internal/products/reserve-stock"
+fi
+
+if [ "$PHASE" = "workflow" ]; then
+  echo "sagas -> workflow (credential required: Annex E)"
+  check    "starting a saga needs a credential"                401 -X POST "$BASE/api/v1/sagas/place-order"
+  contains "...with the envelope"                              '"error":"UNAUTHORIZED"' -X POST "$BASE/api/v1/sagas/place-order"
+  contains "...and a credential reaches the workflow"          '"service":"workflow"' -X POST -H "$BEARER" "$BASE/api/v1/sagas/place-order"
+  contains "...with the credential untouched"                  '"authorization":"Bearer abc.def.ghi"' -X POST -H "$BEARER" "$BASE/api/v1/sagas/place-order"
+  contains "the Idempotency-Key reaches the workflow"          '"idempotencyKey":"saga-key-1"' -X POST -H "$BEARER" -H 'Idempotency-Key: saga-key-1' "$BASE/api/v1/sagas/place-order"
+  contains "the correlation id reaches the workflow"           '"correlationId":"route-3"' -X POST -H "$BEARER" -H 'X-Correlation-Id: route-3' "$BASE/api/v1/sagas/place-order"
+  check    "reading a saga needs a credential"                 401 "$BASE/api/v1/sagas/7f3a"
+  contains "...and with one the saga is read"                  '"uri":"/api/v1/sagas/7f3a"' -H "$BEARER" "$BASE/api/v1/sagas/7f3a"
+  check    "a saga of the workflow that is not found passes through" 404 -H "$BEARER" "$BASE/api/v1/sagas/force-404"
+  contains "...with the workflow's own body"                   '"error":"ORDER_NOT_FOUND"' -H "$BEARER" "$BASE/api/v1/sagas/force-404"
+  check    "the bare prefix is not routed"                     404 -H "$BEARER" "$BASE/api/v1/sagas"
+  check    "a path that only starts like sagas is not routed"  404 -H "$BEARER" "$BASE/api/v1/sagasx"
+fi
+
+if [ "$PHASE" = "identity" ]; then
+  echo "sign in and create an account -> identity (public)"
+  contains "signing in needs no credential and reaches identity"   '"service":"identity"' -X POST "$BASE/api/v1/auth/login"
+  contains "...mapped to the path the service serves"              '"uri":"/auth/login"' -X POST "$BASE/api/v1/auth/login"
+  contains "creating an account needs no credential either"        '"uri":"/auth/register"' -X POST "$BASE/api/v1/auth/register"
+  contains "a token that is sent arrives untouched"                '"authorization":"Bearer abc.def.ghi"' -X POST -H "$BEARER" "$BASE/api/v1/auth/login"
+  contains "the correlation id reaches identity"                   '"correlationId":"route-4"' -X POST -H 'X-Correlation-Id: route-4' "$BASE/api/v1/auth/login"
+  contains "the browser may read the answer (CORS)"                'Access-Control-Allow-Origin: http://localhost:3000' -X POST -H "$ORIGIN" "$BASE/api/v1/auth/login"
+  check    "a preflight needs no credential"                       204 -X OPTIONS -H "$ORIGIN" -H 'Access-Control-Request-Method: POST' "$BASE/api/v1/auth/login"
+  absent   "the service's own CORS origin is not passed on"         'the-service-own-origin' -X POST -H "$ORIGIN" "$BASE/api/v1/auth/login"
+  one=$(curl -s -i --max-time 15 -X POST -H "$ORIGIN" "$BASE/api/v1/auth/login" | grep -ci '^access-control-allow-origin:')
+  if [ "$one" = "1" ]; then echo "  ok    ...so the browser sees exactly one Access-Control-Allow-Origin"; else echo "  FAIL  the browser would see $one Access-Control-Allow-Origin headers"; fail=1; fi
+  check    "only POST is routed: a GET is not"                     404 "$BASE/api/v1/auth/login"
+  check    "...and neither is it for creating an account"          404 "$BASE/api/v1/auth/register"
+  check    "walk-in registration is not published"                 404 -X POST -H "$BEARER" "$BASE/api/v1/auth/register-walk-in"
+  check    "the list of staff is not published"                    404 -H "$BEARER" "$BASE/api/v1/auth/staff"
+  check    "the search of customers is not published"              404 -H "$BEARER" "$BASE/api/v1/auth/customers"
+  check    "the monolith's own path is not published"              404 -X POST "$BASE/auth/login"
+  check    "a path that only starts like login is not routed"      404 -X POST "$BASE/api/v1/auth/loginx"
+  echo "guessing passwords is limited harder than the rest"
+  n=0; last=0
+  for i in 1 2 3 4 5 6 7 8 9 10 11 12; do last=$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/auth/login"); [ "$last" = "429" ] && n=$((n+1)); done
+  if [ "$n" -ge 1 ]; then echo "  ok    a burst of 12 more attempts is cut with a 429 ($n of them)"; else echo "  FAIL  no attempt was limited"; fail=1; fi
+fi
+
+# A failure stays inside its own route (Annex F): the gateway resolves each service on every request, so with one
+# service stopped only ITS routes answer 503 and every other route keeps working.
+if [ "$PHASE" = "sales-down" ]; then
+  echo "sales-api is down"
+  check    "its route answers 503"                             503 -X POST "$BASE/api/v1/orders"
+  contains "...with the envelope"                              '"error":"SERVICE_UNAVAILABLE"' -X POST "$BASE/api/v1/orders"
+  contains "...and a traceId"                                  '"traceId":"' -X POST "$BASE/api/v1/orders"
+  contains "...and the browser may read it (CORS)"             'Access-Control-Allow-Origin: http://localhost:3000' -X POST -H "$ORIGIN" "$BASE/api/v1/orders"
+  contains "...and the correlation id is returned"             'X-Correlation-Id: down-1' -X POST -H 'X-Correlation-Id: down-1' "$BASE/api/v1/orders"
+  check    "the catalog still answers"                         200 "$BASE/api/v1/products"
+  check    "the admin catalog still answers"                   200 -H "$BEARER" "$BASE/api/v1/admin/products"
+  check    "the workflow still answers"                        200 -H "$BEARER" "$BASE/api/v1/sagas/7f3a"
+  check    "the gateway itself stays healthy"                  200 "$BASE/health"
+fi
+
+if [ "$PHASE" = "workflow-down" ]; then
+  echo "the workflow is down too"
+  check    "its route answers 503"                             503 -X POST -H "$BEARER" "$BASE/api/v1/sagas/place-order"
+  contains "...with the envelope"                              '"error":"SERVICE_UNAVAILABLE"' -X POST -H "$BEARER" "$BASE/api/v1/sagas/place-order"
+  check    "a missing credential is still a 401, not a 503"    401 -X POST "$BASE/api/v1/sagas/place-order"
+  check    "the gateway itself stays healthy"                  200 "$BASE/health"
+fi
+
+if [ "$PHASE" = "catalog-down" ]; then
+  echo "catalog-api is down too"
+  check    "the public catalog answers 503"                    503 "$BASE/api/v1/products"
+  contains "...with the envelope"                              '"error":"SERVICE_UNAVAILABLE"' "$BASE/api/v1/products"
+  check    "the admin catalog answers 503"                     503 -H "$BEARER" "$BASE/api/v1/admin/products"
+  check    "a missing credential is still a 401, not a 503"    401 "$BASE/api/v1/admin/products"
+  check    "the gateway itself stays healthy"                  200 "$BASE/health"
+fi
+
+if [ "$PHASE" = "identity-down" ]; then
+  echo "identity is down too"
+  check    "signing in answers 503"                              503 -X POST "$BASE/api/v1/auth/login"
+  contains "...with the envelope"                                '"error":"SERVICE_UNAVAILABLE"' -X POST "$BASE/api/v1/auth/login"
+  check    "the gateway itself stays healthy"                    200 "$BASE/health"
+fi
+
+exit $fail
