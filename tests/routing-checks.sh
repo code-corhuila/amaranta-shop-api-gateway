@@ -124,6 +124,19 @@ if [ "$PHASE" = "identity" ]; then
   check    "the search of customers is not published"              404 -H "$BEARER" "$BASE/api/v1/auth/customers"
   check    "the monolith's own path is not published"              404 -X POST "$BASE/auth/login"
   check    "a path that only starts like login is not routed"      404 -X POST "$BASE/api/v1/auth/loginx"
+  echo "the back office of the shop -> sales-api and identity (credential required)"
+  check    "every order needs a credential"                        401 "$BASE/api/v1/admin/orders"
+  contains "...with the envelope"                                  '"error":"UNAUTHORIZED"' "$BASE/api/v1/admin/orders"
+  contains "...and with one it reaches sales-api, path kept"       '"uri":"/api/v1/admin/orders"' -H "$BEARER" "$BASE/api/v1/admin/orders"
+  contains "...with the page asked for"                            '"uri":"/api/v1/admin/orders?page=2&limit=5"' -H "$BEARER" "$BASE/api/v1/admin/orders?page=2&limit=5"
+  check    "every account needs a credential"                      401 "$BASE/api/v1/admin/users"
+  contains "...and with one it reaches identity, mapped"           '"uri":"/auth/users"' -H "$BEARER" "$BASE/api/v1/admin/users"
+  contains "...with the page asked for"                            '"uri":"/auth/users?page=2&limit=5"' -H "$BEARER" "$BASE/api/v1/admin/users?page=2&limit=5"
+  absent   "...and the service's own CORS origin is not passed on" 'the-service-own-origin' -H "$ORIGIN" -H "$BEARER" "$BASE/api/v1/admin/users"
+  check    "a path that only starts like admin orders is not routed" 404 -H "$BEARER" "$BASE/api/v1/admin/orders/7f3a"
+  check    "...nor like admin users"                               404 -H "$BEARER" "$BASE/api/v1/admin/users/7f3a"
+  check    "the staff list of identity is still not published"     404 -H "$BEARER" "$BASE/api/v1/auth/staff"
+
   echo "guessing passwords is limited harder than the rest"
   n=0; last=0
   for i in 1 2 3 4 5 6 7 8 9 10 11 12; do last=$(curl -s --max-time 15 -o /dev/null -w '%{http_code}' -X POST "$BASE/api/v1/auth/login"); [ "$last" = "429" ] && n=$((n+1)); done
