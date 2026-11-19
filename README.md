@@ -46,6 +46,8 @@ all. It is **configuration, not code** (Annex F): nginx with the files of `nginx
 | `GET /api/v1/orders` and everything under `/api/v1/orders/` | `sales-api:8080` | required |
 | `GET /api/v1/products`, `GET /api/v1/products/{id}` | `catalog-api:8082` | none |
 | `/api/v1/admin/products` and everything under it | `catalog-api:8082` | required (the service checks `ADMIN`) |
+| `GET /api/v1/admin/orders` | `sales-api:8080` | required (the service checks `ADMIN`) |
+| `GET /api/v1/admin/users` | `identity:8080`, mapped to its `/auth/users` | required (the service checks `ADMIN`) |
 | `/api/v1/sagas/...` | `workflow:8083` | required |
 | `POST /api/v1/auth/login`, `POST /api/v1/auth/register` | `identity:8080` (the monolith still answers as `identity`, ADR-011), mapped to its `/auth/...` | **none** (nobody has a token yet); a bucket of 10 a minute per address, burst 10 |
 | anything else, including every `/internal/...` | — | `404` with the envelope |
@@ -77,7 +79,7 @@ nginx/
 ├── snippets/
 │   ├── headers.conf        the headers every response carries
 │   └── require-credential.conf   one line a protected route includes
-└── routes/                 ONE FILE PER DOMAIN: _health, orders, catalog, workflow, identity
+└── routes/                 ONE FILE PER DOMAIN: _health, orders, catalog, workflow, identity, admin (the back office)
 ```
 
 - **One reason to change per file.** A new origin is a line in `10-security.conf`; a new domain is one new file in
